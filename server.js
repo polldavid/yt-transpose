@@ -42,6 +42,7 @@ app.get('/api/diag', async (req, res) => {
     commit: (process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '').slice(0, 7) || null,
     node: process.version,
     ytDlp: await ytDlpInfo(),
+    cookies: Boolean(process.env.YT_COOKIES_TXT),
   };
   if ('test' in req.query) {
     out.test = await diagnose('https://www.youtube.com/watch?v=jNQXAC9IVRw');
