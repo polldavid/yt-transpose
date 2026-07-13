@@ -170,14 +170,73 @@ async function loadViaServer(url) {
   return { info, arrayBuffer: await audioRes.arrayBuffer() };
 }
 
-const MIRRORS = [
+// Known-good instances (snapshot of the official public-instance lists).
+// Used when the live directories below are unreachable.
+const FALLBACK_MIRRORS = [
   { type: 'piped', base: 'https://pipedapi.kavin.rocks' },
+  { type: 'piped', base: 'https://pipedapi.adminforge.de' },
   { type: 'piped', base: 'https://api.piped.private.coffee' },
   { type: 'piped', base: 'https://pipedapi.ducks.party' },
-  { type: 'piped', base: 'https://piapi.ggtyler.dev' },
+  { type: 'piped', base: 'https://pipedapi.drgns.space' },
+  { type: 'piped', base: 'https://pipedapi.leptons.xyz' },
+  { type: 'piped', base: 'https://pipedapi.nosebs.ru' },
+  { type: 'piped', base: 'https://api.piped.yt' },
+  { type: 'piped', base: 'https://pipedapi.owo.si' },
+  { type: 'piped', base: 'https://pipedapi.reallyaweso.me' },
+  { type: 'piped', base: 'https://piped-api.privacy.com.de' },
+  { type: 'piped', base: 'https://piped-api.codespace.cz' },
+  { type: 'piped', base: 'https://pipedapi.darkness.services' },
+  { type: 'piped', base: 'https://pipedapi.orangenet.cc' },
+  { type: 'piped', base: 'https://pipedapi-libre.kavin.rocks' },
   { type: 'invidious', base: 'https://inv.nadeko.net' },
-  { type: 'invidious', base: 'https://yewtu.be' },
+  { type: 'invidious', base: 'https://invidious.nerdvpn.de' },
+  { type: 'invidious', base: 'https://invidious.tiekoetter.com' },
+  { type: 'invidious', base: 'https://yt.chocolatemoo53.com' },
+  { type: 'invidious', base: 'https://invidious.f5.si' },
+  { type: 'invidious', base: 'https://inv.zoomerville.com' },
 ];
+
+// Both projects publish live, health-checked instance directories (with CORS
+// open). Discover current mirrors at runtime so the list never goes stale;
+// fall back to the snapshot above if the directories are down.
+let mirrorsPromise = null;
+function discoverMirrors() {
+  if (!mirrorsPromise) {
+    mirrorsPromise = (async () => {
+      const discovered = [];
+      const [piped, invidious] = await Promise.allSettled([
+        fetchWithTimeout('https://piped-instances.kavin.rocks/', 8000).then((r) => r.json()),
+        fetchWithTimeout('https://api.invidious.io/instances.json?sort_by=health', 8000).then((r) => r.json()),
+      ]);
+      if (piped.status === 'fulfilled' && Array.isArray(piped.value)) {
+        for (const inst of piped.value) {
+          if (inst && inst.api_url) discovered.push({ type: 'piped', base: inst.api_url });
+        }
+      }
+      if (invidious.status === 'fulfilled' && Array.isArray(invidious.value)) {
+        for (const entry of invidious.value) {
+          const d = Array.isArray(entry) ? entry[1] : null;
+          if (d && d.type === 'https' && d.api !== false && d.cors !== false) {
+            discovered.push({ type: 'invidious', base: d.uri.replace(/\/+$/, '') });
+          }
+        }
+      }
+      const seen = new Set();
+      const merged = [];
+      for (const m of [...discovered, ...FALLBACK_MIRRORS]) {
+        try {
+          const host = new URL(m.base).hostname;
+          if (!seen.has(host)) {
+            seen.add(host);
+            merged.push(m);
+          }
+        } catch (_) { /* malformed directory entry */ }
+      }
+      return merged.slice(0, 24);
+    })().catch(() => FALLBACK_MIRRORS);
+  }
+  return mirrorsPromise;
+}
 
 function parseVideoId(url) {
   try {
@@ -246,26 +305,38 @@ async function loadViaMirrors(url) {
   const id = parseVideoId(url);
   if (!id) throw fatal('That does not look like a valid YouTube link.');
 
+  setStatus('Finding a working mirror…');
+  const mirrors = await discoverMirrors();
+  const CHUNK = 6;
   let lastError = null;
-  for (const mirror of MIRRORS) {
-    const host = new URL(mirror.base).hostname;
-    try {
-      setStatus(`Looking up video via ${host}…`);
-      const { audioUrl, info } = await mirrorLookup(mirror, id);
+
+  for (let i = 0; i < mirrors.length; i += CHUNK) {
+    const chunk = mirrors.slice(i, i + CHUNK);
+    setStatus(`Checking mirrors ${i + 1}–${Math.min(i + CHUNK, mirrors.length)} of ${mirrors.length}…`);
+    const settled = await Promise.allSettled(
+      chunk.map((m) => mirrorLookup(m, id).then((r) => ({ mirror: m, ...r })))
+    );
+    for (const result of settled) {
+      if (result.status !== 'fulfilled') {
+        lastError = result.reason;
+        continue;
+      }
+      const { mirror, audioUrl, info } = result.value;
       if (info.lengthSeconds > MAX_SECONDS) {
         throw fatal(`That video is over ${MAX_SECONDS / 60} minutes — pick something shorter.`);
       }
-      setStatus(`Downloading audio via ${host}…`);
-      const audioRes = await fetchWithTimeout(audioUrl, 120000);
-      if (!audioRes.ok) throw new Error(`audio HTTP ${audioRes.status}`);
-      return { info, arrayBuffer: await audioRes.arrayBuffer() };
-    } catch (err) {
-      if (err.fatal) throw err;
-      lastError = err;
+      try {
+        setStatus(`Downloading audio via ${new URL(mirror.base).hostname}…`);
+        const audioRes = await fetchWithTimeout(audioUrl, 120000);
+        if (!audioRes.ok) throw new Error(`audio HTTP ${audioRes.status}`);
+        return { info, arrayBuffer: await audioRes.arrayBuffer() };
+      } catch (err) {
+        lastError = err;
+      }
     }
   }
   throw new Error(
-    'All public YouTube mirrors failed for this video. These community mirrors go up and down — try again later, or run the app with its own server (see README).'
+    'All public YouTube mirrors failed for this video. These community mirrors go up and down — try again in a bit, or use the server-backed version (see README).'
       + (lastError ? ` (last error: ${lastError.message})` : '')
   );
 }
