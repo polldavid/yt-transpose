@@ -30,6 +30,10 @@ async function getInfoOr502(url, res) {
   }
 }
 
+// Lets the frontend detect that it's running against this server (vs. being
+// statically hosted, e.g. on GitHub Pages, where it falls back to public mirrors).
+app.get('/api/health', (req, res) => res.json({ ok: true }));
+
 app.get('/api/info', async (req, res) => {
   const { url } = req.query;
   if (!url || !ytdl.validateURL(url)) {

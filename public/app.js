@@ -1,4 +1,4 @@
-import { PitchShifter } from '/vendor/soundtouch.js';
+import { PitchShifter } from './vendor/soundtouch.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -22,6 +22,7 @@ const timeTotalEl = $('time-total');
 
 const MIN_SEMITONES = -12;
 const MAX_SEMITONES = 12;
+const MAX_SECONDS = 20 * 60;
 
 let audioCtx = null;
 let gainNode = null;
@@ -106,6 +107,23 @@ function applyPitch(value) {
   if (shifter) shifter.pitchSemitones = semitones;
 }
 
+function fatal(message) {
+  // A fatal error aborts the mirror fallback chain (e.g. video too long).
+  const err = new Error(message);
+  err.fatal = true;
+  return err;
+}
+
+async function fetchWithTimeout(url, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchJson(url) {
   const res = await fetch(url);
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
@@ -113,6 +131,146 @@ async function fetchJson(url) {
   if (!res.ok) throw new Error((body && body.error) || `Request failed (${res.status})`);
   return body;
 }
+
+// ---------------------------------------------------------------------------
+// Audio sources. "server" talks to this app's own Node backend (localhost or
+// a deployed instance). "mirrors" is the fallback for static hosting (GitHub
+// Pages): community-run Piped/Invidious instances that proxy YouTube audio
+// with CORS enabled. Both return { info, arrayBuffer }.
+// ---------------------------------------------------------------------------
+
+let backendPromise = null;
+function detectBackend() {
+  if (!backendPromise) {
+    // Relative path: resolves under the app's base URL both at a domain root
+    // and at a subpath like username.github.io/repo/.
+    backendPromise = fetch('api/health')
+      .then((r) => (r.ok ? 'server' : 'mirrors'))
+      .catch(() => 'mirrors');
+  }
+  return backendPromise;
+}
+
+async function loadViaServer(url) {
+  setStatus('Looking up video…');
+  const info = await fetchJson(`api/info?url=${encodeURIComponent(url)}`);
+  if (info.tooLong) {
+    throw fatal(`That video is over ${Math.round(info.maxSeconds / 60)} minutes — pick something shorter.`);
+  }
+
+  setStatus('Downloading audio…');
+  const audioRes = await fetch(`api/audio?url=${encodeURIComponent(url)}`);
+  if (!audioRes.ok) {
+    let message = `Audio download failed (${audioRes.status})`;
+    try {
+      message = (await audioRes.json()).error || message;
+    } catch (_) { /* non-JSON error body */ }
+    throw new Error(message);
+  }
+  return { info, arrayBuffer: await audioRes.arrayBuffer() };
+}
+
+const MIRRORS = [
+  { type: 'piped', base: 'https://pipedapi.kavin.rocks' },
+  { type: 'piped', base: 'https://api.piped.private.coffee' },
+  { type: 'piped', base: 'https://pipedapi.ducks.party' },
+  { type: 'piped', base: 'https://piapi.ggtyler.dev' },
+  { type: 'invidious', base: 'https://inv.nadeko.net' },
+  { type: 'invidious', base: 'https://yewtu.be' },
+];
+
+function parseVideoId(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'youtu.be') {
+      const id = u.pathname.slice(1).split('/')[0];
+      if (/^[\w-]{11}$/.test(id)) return id;
+    }
+    if (/(^|\.)youtube(-nocookie)?\.com$/.test(u.hostname)) {
+      const v = u.searchParams.get('v');
+      if (v && /^[\w-]{11}$/.test(v)) return v;
+      const m = u.pathname.match(/\/(shorts|embed|live|v)\/([\w-]{11})/);
+      if (m) return m[2];
+    }
+  } catch (_) { /* not a URL */ }
+  return null;
+}
+
+// Prefer AAC/mp4 (every browser incl. iOS Safari decodes it), highest bitrate.
+function rankAudio(a, b) {
+  const mp4 = (s) => ((s.mimeType || s.type || '').includes('audio/mp4') ? 1 : 0);
+  return mp4(b) - mp4(a) || (b.bitrate || 0) - (a.bitrate || 0);
+}
+
+async function mirrorLookup(mirror, id) {
+  if (mirror.type === 'piped') {
+    const res = await fetchWithTimeout(`${mirror.base}/streams/${id}`, 10000);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const streams = (data.audioStreams || []).slice().sort(rankAudio);
+    if (!streams.length) throw new Error('no audio streams');
+    return {
+      audioUrl: streams[0].url,
+      info: {
+        title: data.title,
+        author: data.uploader,
+        lengthSeconds: data.duration,
+        thumbnail: data.thumbnailUrl,
+      },
+    };
+  }
+  // invidious — local=true proxies the stream through the instance (adds CORS)
+  const res = await fetchWithTimeout(`${mirror.base}/api/v1/videos/${id}?local=true`, 10000);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  const streams = (data.adaptiveFormats || [])
+    .filter((f) => (f.type || '').startsWith('audio/'))
+    .sort(rankAudio);
+  if (!streams.length) throw new Error('no audio streams');
+  const audioUrl = new URL(streams[0].url, mirror.base).href;
+  const thumbs = data.videoThumbnails || [];
+  return {
+    audioUrl,
+    info: {
+      title: data.title,
+      author: data.author,
+      lengthSeconds: data.lengthSeconds,
+      thumbnail: thumbs.length ? thumbs[0].url : null,
+    },
+  };
+}
+
+async function loadViaMirrors(url) {
+  const id = parseVideoId(url);
+  if (!id) throw fatal('That does not look like a valid YouTube link.');
+
+  let lastError = null;
+  for (const mirror of MIRRORS) {
+    const host = new URL(mirror.base).hostname;
+    try {
+      setStatus(`Looking up video via ${host}…`);
+      const { audioUrl, info } = await mirrorLookup(mirror, id);
+      if (info.lengthSeconds > MAX_SECONDS) {
+        throw fatal(`That video is over ${MAX_SECONDS / 60} minutes — pick something shorter.`);
+      }
+      setStatus(`Downloading audio via ${host}…`);
+      const audioRes = await fetchWithTimeout(audioUrl, 120000);
+      if (!audioRes.ok) throw new Error(`audio HTTP ${audioRes.status}`);
+      return { info, arrayBuffer: await audioRes.arrayBuffer() };
+    } catch (err) {
+      if (err.fatal) throw err;
+      lastError = err;
+    }
+  }
+  throw new Error(
+    'All public YouTube mirrors failed for this video. These community mirrors go up and down — try again later, or run the app with its own server (see README).'
+      + (lastError ? ` (last error: ${lastError.message})` : '')
+  );
+}
+
+// ---------------------------------------------------------------------------
 
 async function loadSong(url) {
   loadBtn.disabled = true;
@@ -122,27 +280,13 @@ async function loadSong(url) {
   audioBuffer = null;
 
   try {
-    setStatus('Looking up video…');
-    const info = await fetchJson(`/api/info?url=${encodeURIComponent(url)}`);
-    if (info.tooLong) {
-      throw new Error(`That video is over ${Math.round(info.maxSeconds / 60)} minutes — pick something shorter.`);
-    }
+    const backend = await detectBackend();
+    const { info, arrayBuffer } =
+      backend === 'server' ? await loadViaServer(url) : await loadViaMirrors(url);
 
     titleEl.textContent = info.title;
     authorEl.textContent = info.author || '';
     if (info.thumbnail) thumbEl.src = info.thumbnail;
-    timeTotalEl.textContent = formatTime(info.lengthSeconds);
-
-    setStatus('Downloading audio…');
-    const audioRes = await fetch(`/api/audio?url=${encodeURIComponent(url)}`);
-    if (!audioRes.ok) {
-      let message = `Audio download failed (${audioRes.status})`;
-      try {
-        message = (await audioRes.json()).error || message;
-      } catch (_) { /* non-JSON error body */ }
-      throw new Error(message);
-    }
-    const arrayBuffer = await audioRes.arrayBuffer();
 
     setStatus('Decoding audio…');
     // Promise wrapper: iOS Safari still wants the callback form of decodeAudioData.

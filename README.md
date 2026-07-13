@@ -22,7 +22,11 @@ To try it from your phone on the same Wi-Fi, open `http://<your-computer's-ip>:3
 
 ## Get a test URL in a few clicks
 
-Two zero-config options (both read the configs already in this repo):
+**GitHub Pages (no server at all)** — this repo ships a workflow that publishes the app to `https://polldavid.github.io/yt-transpose/` on every push. On static hosting there is no backend, so the app automatically falls back to community-run YouTube mirrors (Piped/Invidious) to fetch audio, trying several until one works. Those mirrors go up and down — if a song won't load there, it's the mirrors, not the app; the server-backed deploys below are the reliable option.
+
+To turn it on once: repo **Settings → Pages → Source: "GitHub Actions"** (the workflow also tries to enable this automatically on first run).
+
+Two more zero-config options (both read the configs already in this repo):
 
 **Render (free tier, permanent URL)** — click, sign in, and it deploys this branch using `render.yaml`:
 
