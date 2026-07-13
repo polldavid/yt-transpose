@@ -31,3 +31,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: _site
+          # Always push, even when the site is unchanged: GitHub only runs its
+          # Pages build on a push to gh-pages, and a skipped publish leaves a
+          # freshly-enabled Pages site stuck on 404.
+          allow_empty_commit: true
