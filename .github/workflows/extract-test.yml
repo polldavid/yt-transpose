@@ -1,0 +1,26 @@
+name: Test YouTube extraction
+
+# Runs the extractor from a GitHub runner (datacenter IP) — a realistic
+# stand-in for cloud hosts like Render that YouTube may bot-block.
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: YouTube URL to test
+        required: false
+        default: "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: node scripts/test-extract.mjs "${{ inputs.video_url }}"

@@ -14,6 +14,7 @@
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
     "express": "^4.21.2",
-    "soundtouchjs": "^0.2.1"
+    "soundtouchjs": "^0.2.1",
+    "youtubei.js": "^17.2.0"
   }
 }

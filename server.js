@@ -2,7 +2,7 @@ process.env.YTDL_NO_UPDATE = process.env.YTDL_NO_UPDATE || '1';
 
 const express = require('express');
 const path = require('path');
-const ytdl = require('@distube/ytdl-core');
+const { extract, validateURL } = require('./lib/extract');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,11 +17,11 @@ function badRequest(res, message) {
   return res.status(400).json({ error: message });
 }
 
-async function getInfoOr502(url, res) {
+async function extractOr502(url, res) {
   try {
-    return await ytdl.getInfo(url);
+    return await extract(url);
   } catch (err) {
-    console.error('ytdl.getInfo failed:', err.message);
+    console.error('extraction failed:', err.message);
     res.status(502).json({
       error:
         'Could not read that video from YouTube. It may be private, region-locked, age-restricted, or YouTube may be temporarily blocking this server.',
@@ -36,63 +36,51 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 app.get('/api/info', async (req, res) => {
   const { url } = req.query;
-  if (!url || !ytdl.validateURL(url)) {
+  if (!url || !validateURL(url)) {
     return badRequest(res, 'That does not look like a valid YouTube link.');
   }
 
-  const info = await getInfoOr502(url, res);
-  if (!info) return;
+  const track = await extractOr502(url, res);
+  if (!track) return;
 
-  const d = info.videoDetails;
-  const lengthSeconds = Number(d.lengthSeconds) || 0;
   res.json({
-    id: d.videoId,
-    title: d.title,
-    author: d.author && d.author.name,
-    lengthSeconds,
-    tooLong: lengthSeconds > MAX_DURATION_SECONDS,
+    id: track.id,
+    title: track.title,
+    author: track.author,
+    lengthSeconds: track.lengthSeconds,
+    tooLong: track.lengthSeconds > MAX_DURATION_SECONDS,
     maxSeconds: MAX_DURATION_SECONDS,
-    thumbnail:
-      Array.isArray(d.thumbnails) && d.thumbnails.length
-        ? d.thumbnails[d.thumbnails.length - 1].url
-        : null,
+    thumbnail: track.thumbnail,
   });
 });
 
 app.get('/api/audio', async (req, res) => {
   const { url } = req.query;
-  if (!url || !ytdl.validateURL(url)) {
+  if (!url || !validateURL(url)) {
     return badRequest(res, 'That does not look like a valid YouTube link.');
   }
 
-  const info = await getInfoOr502(url, res);
-  if (!info) return;
+  const track = await extractOr502(url, res);
+  if (!track) return;
 
-  const lengthSeconds = Number(info.videoDetails.lengthSeconds) || 0;
-  if (lengthSeconds > MAX_DURATION_SECONDS) {
+  if (track.lengthSeconds > MAX_DURATION_SECONDS) {
     return badRequest(
       res,
       `Video is longer than ${MAX_DURATION_SECONDS / 60} minutes — too big to transpose in the browser.`
     );
   }
 
-  const audioFormats = info.formats.filter((f) => f.hasAudio && !f.hasVideo);
-  if (!audioFormats.length) {
-    return res.status(502).json({ error: 'No audio stream found for this video.' });
+  let stream;
+  try {
+    stream = await track.createStream();
+  } catch (err) {
+    console.error('audio stream creation failed:', err.message);
+    return res.status(502).json({ error: 'Could not start the audio download. Try again.' });
   }
 
-  // Prefer AAC in an mp4 container (itag 140): it's the one format every
-  // browser's decodeAudioData handles, including iOS Safari. Opus/webm is
-  // higher quality but Safari cannot decode it.
-  const format =
-    audioFormats.find((f) => f.itag === 140) ||
-    audioFormats.find((f) => f.container === 'mp4') ||
-    ytdl.chooseFormat(audioFormats, { quality: 'highestaudio' });
+  res.setHeader('Content-Type', track.mimeType);
+  if (track.contentLength) res.setHeader('Content-Length', track.contentLength);
 
-  res.setHeader('Content-Type', (format.mimeType || 'audio/mp4').split(';')[0]);
-  if (format.contentLength) res.setHeader('Content-Length', format.contentLength);
-
-  const stream = ytdl.downloadFromInfo(info, { format });
   stream.on('error', (err) => {
     console.error('audio stream error:', err.message);
     if (!res.headersSent) {
