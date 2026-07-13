@@ -4,5 +4,5 @@ services:
     runtime: node
     plan: free
     branch: claude/youtube-song-transposer-bq961f
-    buildCommand: npm install
+    buildCommand: npm install && bash scripts/install-yt-dlp.sh
     startCommand: npm start

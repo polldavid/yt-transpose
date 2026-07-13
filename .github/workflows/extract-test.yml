@@ -23,4 +23,5 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      - run: bash scripts/install-yt-dlp.sh
       - run: node scripts/test-extract.mjs "${{ inputs.video_url }}"
