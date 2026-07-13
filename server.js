@@ -2,7 +2,7 @@ process.env.YTDL_NO_UPDATE = process.env.YTDL_NO_UPDATE || '1';
 
 const express = require('express');
 const path = require('path');
-const { extract, validateURL } = require('./lib/extract');
+const { extract, diagnose, ytDlpInfo, validateURL } = require('./lib/extract');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,6 +33,21 @@ async function extractOr502(url, res) {
 // Lets the frontend detect that it's running against this server (vs. being
 // statically hosted, e.g. on GitHub Pages, where it falls back to public mirrors).
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// Deployment self-diagnosis: reports the running commit and yt-dlp presence.
+// Add ?test=1 to live-run every extractor against a known video and report
+// each one's outcome (takes up to a minute).
+app.get('/api/diag', async (req, res) => {
+  const out = {
+    commit: (process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '').slice(0, 7) || null,
+    node: process.version,
+    ytDlp: await ytDlpInfo(),
+  };
+  if ('test' in req.query) {
+    out.test = await diagnose('https://www.youtube.com/watch?v=jNQXAC9IVRw');
+  }
+  res.json(out);
+});
 
 app.get('/api/info', async (req, res) => {
   const { url } = req.query;
