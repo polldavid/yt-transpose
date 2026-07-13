@@ -1,0 +1,11 @@
+{
+  "setupTasks": ["npm install"],
+  "tasks": {
+    "start": {
+      "name": "Start server",
+      "command": "npm start",
+      "runAtStart": true,
+      "preview": { "port": 3000 }
+    }
+  }
+}

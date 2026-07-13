@@ -20,6 +20,20 @@ npm start     # serves on http://localhost:3000
 
 To try it from your phone on the same Wi-Fi, open `http://<your-computer's-ip>:3000`.
 
+## Get a test URL in a few clicks
+
+Two zero-config options (both read the configs already in this repo):
+
+**Render (free tier, permanent URL)** — click, sign in, and it deploys this branch using `render.yaml`:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/polldavid/yt-transpose/tree/claude/youtube-song-transposer-bq961f)
+
+You'll get a URL like `https://yt-transpose.onrender.com` that works from your phone. Free instances sleep when idle, so the first request after a while takes ~30s to wake.
+
+**CodeSandbox (instant, throwaway)** — opens the repo in a cloud VM and starts the server with a shareable preview URL:
+
+https://codesandbox.io/p/github/polldavid/yt-transpose/tree/claude/youtube-song-transposer-bq961f
+
 ## Deploy (to make it reachable from anywhere)
 
 This needs a long-running Node server (audio streams can take a while), so pick a host that runs persistent Node processes rather than short-lived serverless functions:
