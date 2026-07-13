@@ -9,13 +9,15 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +27,7 @@ jobs:
       # postinstall copies the SoundTouchJS browser build into public/vendor
       - run: npm install
       - run: mkdir -p _site && cp -r public/. _site/
-      # Publishing to a gh-pages branch auto-enables GitHub Pages on the repo,
-      # which the actions-based Pages deploy can't do with the default token.
+      # Covers Pages source "Deploy from a branch" (gh-pages).
       - uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -35,3 +36,19 @@ jobs:
           # Pages build on a push to gh-pages, and a skipped publish leaves a
           # freshly-enabled Pages site stuck on 404.
           allow_empty_commit: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  # Covers Pages source "GitHub Actions". Fails harmlessly when the source is
+  # set to a branch instead, hence continue-on-error.
+  deploy-actions:
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
